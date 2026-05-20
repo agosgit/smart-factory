@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.env
+.env
+.python-version
+venv/
+backend/venv/
+.Python
+python-venv/
+
+# Django
+*.log
+*.pot
+*.pyc
+local_settings.py
+db.sqlite3
+media
+
+# Node
+node_modules/
+pnpm-lock.yaml
+yarn.lock
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Vite / frontend
+dist/
+build/
+
+# VS Code
+.vscode/
+
+# System
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# Backup files
+*~
+*.swp
+*.swo
+
+# IDEs
+.idea/
+*.iml
