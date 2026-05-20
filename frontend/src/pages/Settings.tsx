@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Sliders, Thermometer, Activity, AlertTriangle, Save, 
-  RotateCcw, CheckCircle2, AlertCircle, RefreshCw, HelpCircle, ShieldAlert 
+  RotateCcw, CheckCircle2, AlertCircle, RefreshCw, HelpCircle, ShieldAlert,
+  Zap, Droplets, Wind
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -88,8 +89,11 @@ export default function Settings() {
   // Reset to default factory settings
   const handleResetToDefaults = () => {
     const factoryDefaults: Record<string, number> = {
-      temperature: 70.0,
+      temp_machine: 70.0,
       vibration: 1.5,
+      current: 10.0,
+      temp_room: 35.0,
+      humidity: 80.0,
       gas_level: 300.0
     };
 
@@ -112,7 +116,7 @@ export default function Settings() {
   // Helper: map metric to icon and colors
   const getMetricStyling = (metric: string) => {
     switch (metric) {
-      case 'temperature':
+      case 'temp_machine':
         return {
           icon: <Thermometer className="h-6 w-6 text-blue-500" />,
           bgColor: 'bg-blue-50/50',
@@ -131,6 +135,36 @@ export default function Settings() {
           sliderMin: 0.1,
           sliderMax: 5.0,
           sliderStep: 0.05
+        };
+      case 'current':
+        return {
+          icon: <Zap className="h-6 w-6 text-amber-500" />,
+          bgColor: 'bg-amber-50/50',
+          borderColor: 'border-amber-200',
+          accentColor: 'accent-amber-500',
+          sliderMin: 0.5,
+          sliderMax: 30.0,
+          sliderStep: 0.5
+        };
+      case 'temp_room':
+        return {
+          icon: <Wind className="h-6 w-6 text-teal-500" />,
+          bgColor: 'bg-teal-50/50',
+          borderColor: 'border-teal-200',
+          accentColor: 'accent-teal-500',
+          sliderMin: 20,
+          sliderMax: 60,
+          sliderStep: 0.5
+        };
+      case 'humidity':
+        return {
+          icon: <Droplets className="h-6 w-6 text-emerald-500" />,
+          bgColor: 'bg-emerald-50/50',
+          borderColor: 'border-emerald-200',
+          accentColor: 'accent-emerald-500',
+          sliderMin: 20,
+          sliderMax: 100,
+          sliderStep: 1
         };
       case 'gas_level':
         return {
@@ -369,8 +403,13 @@ export default function Settings() {
               <div>
                 <p className="font-bold text-slate-500">Nilai Default Standard:</p>
                 <div className="mt-2 space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-100 font-mono text-[10px] text-slate-600">
+                  <p className="font-bold text-slate-400 mb-1">NODE 1 — Machine Monitoring</p>
                   <p>• Suhu Mesin: <strong>70.0°C</strong></p>
                   <p>• Getaran Mesin: <strong>1.50g</strong></p>
+                  <p>• Arus Listrik: <strong>10.0A</strong></p>
+                  <p className="font-bold text-slate-400 mt-2 mb-1">NODE 2 — Environment Monitoring</p>
+                  <p>• Suhu Ruangan: <strong>35.0°C</strong></p>
+                  <p>• Kelembaban: <strong>80.0%</strong></p>
                   <p>• Kadar Gas MQ-2: <strong>300.0ppm</strong></p>
                 </div>
               </div>

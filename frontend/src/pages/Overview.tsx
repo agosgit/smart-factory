@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line 
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, ReferenceLine 
 } from 'recharts';
 import { 
   Thermometer, Activity, Zap, Droplets, Wind, RefreshCw, 
@@ -37,20 +37,82 @@ export default function Overview() {
   const [node1Latest, setNode1Latest] = useState<TelemetryPoint | null>(null);
   const [node2Latest, setNode2Latest] = useState<TelemetryPoint | null>(null);
 
-  // History buffers (max 8 points, deduplicated, sorted)
+  // History buffers (max 50 points, deduplicated, sorted)
   const [node1History, setNode1History] = useState<TelemetryPoint[]>([]);
   const [node2History, setNode2History] = useState<TelemetryPoint[]>([]);
   
   // Recent anomalies
   const [recentAnomalies, setRecentAnomalies] = useState<AnomalyLog[]>([]);
   
+  // Threshold values from API — 6 metric sesuai arsitektur TA
+  const [thresholds, setThresholds] = useState<{
+    temp_machine: number;
+    vibration: number;
+    current: number;
+    temp_room: number;
+    humidity: number;
+    gas_level: number;
+  }>({
+    temp_machine: 70.0,
+    vibration: 1.5,
+    current: 10.0,
+    temp_room: 35.0,
+    humidity: 80.0,
+    gas_level: 300.0,
+  });
+
+  // Dynamic Chart Controls Configuration
+  const [chart1PointsCount, setChart1PointsCount] = useState<number>(10);
+  const [chart2PointsCount, setChart2PointsCount] = useState<number>(10);
+  const [chart1Type, setChart1Type] = useState<'area' | 'line'>('area');
+  const [chart2Type, setChart2Type] = useState<'area' | 'line'>('area');
+  // Chart 1 Node 1: temperature (mesin), vibration, current
+  const [chart1VisibleMetrics, setChart1VisibleMetrics] = useState<string[]>(['temperature', 'vibration', 'current']);
+  // Chart 2 Node 2: temperature (ruangan), humidity, gas_level
+  const [chart2VisibleMetrics, setChart2VisibleMetrics] = useState<string[]>(['temperature', 'humidity', 'gas_level']);
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const isMounted = useRef<boolean>(true);
 
+  // Throttling buffers to prevent high-frequency rendering lag
+  const node1BufferRef = useRef<TelemetryPoint[]>([]);
+  const node2BufferRef = useRef<TelemetryPoint[]>([]);
+  const node1LatestRef = useRef<TelemetryPoint | null>(null);
+  const node2LatestRef = useRef<TelemetryPoint | null>(null);
+  const hasNewAnomaliesRef = useRef<boolean>(false);
+
+  // Fetch Thresholds
+  const fetchThresholds = async () => {
+    try {
+      const res = await axios.get('http://127.0.0.1:8000/api/thresholds/');
+      if (res.status === 200 && Array.isArray(res.data) && isMounted.current) {
+        const tm = res.data.find((t: any) => t.metric === 'temp_machine')?.value ?? 70.0;
+        const vib = res.data.find((t: any) => t.metric === 'vibration')?.value ?? 1.5;
+        const cur = res.data.find((t: any) => t.metric === 'current')?.value ?? 10.0;
+        const tr = res.data.find((t: any) => t.metric === 'temp_room')?.value ?? 35.0;
+        const hum = res.data.find((t: any) => t.metric === 'humidity')?.value ?? 80.0;
+        const gas = res.data.find((t: any) => t.metric === 'gas_level')?.value ?? 300.0;
+        setThresholds({
+          temp_machine: tm,
+          vibration: vib,
+          current: cur,
+          temp_room: tr,
+          humidity: hum,
+          gas_level: gas
+        });
+      }
+    } catch (err) {
+      console.error('Error fetching thresholds for Overview:', err);
+    }
+  };
+
   // Prefetch data on load
   const prefetchData = async () => {
     try {
+      // Fetch thresholds first
+      await fetchThresholds();
+
       // 1. Fetch telemetry history
       const telemetryRes = await axios.get('http://127.0.0.1:8000/api/telemetry/?limit=100');
       if (telemetryRes.status === 200 && isMounted.current) {
@@ -64,15 +126,27 @@ export default function Overview() {
           .filter(d => d.node_id === 'node_2')
           .reverse();
 
-        // Process and deduplicate history, keeping last 8
-        setNode1History(deduplicateHistory(n1Data).slice(-8));
-        setNode2History(deduplicateHistory(n2Data).slice(-8));
+        // Process and deduplicate history, keeping last 50
+        const n1Processed = deduplicateHistory(n1Data).slice(-50);
+        const n2Processed = deduplicateHistory(n2Data).slice(-50);
+
+        node1BufferRef.current = n1Processed;
+        node2BufferRef.current = n2Processed;
+
+        setNode1History(n1Processed);
+        setNode2History(n2Processed);
 
         // Set latest stats
         const latest1 = rawData.find(d => d.node_id === 'node_1');
         const latest2 = rawData.find(d => d.node_id === 'node_2');
-        if (latest1) setNode1Latest(latest1);
-        if (latest2) setNode2Latest(latest2);
+        if (latest1) {
+          setNode1Latest(latest1);
+          node1LatestRef.current = latest1;
+        }
+        if (latest2) {
+          setNode2Latest(latest2);
+          node2LatestRef.current = latest2;
+        }
       }
 
       // 2. Fetch recent anomalies
@@ -154,25 +228,15 @@ export default function Overview() {
           };
           
           if (flatPoint.node_id === 'node_1') {
-            setNode1Latest(flatPoint);
-            setNode1History(prev => {
-              const merged = [...prev, flatPoint];
-              return deduplicateHistory(merged).slice(-8);
-            });
+            node1LatestRef.current = flatPoint;
+            node1BufferRef.current = deduplicateHistory([...node1BufferRef.current, flatPoint]).slice(-50);
           } else if (flatPoint.node_id === 'node_2') {
-            setNode2Latest(flatPoint);
-            setNode2History(prev => {
-              const merged = [...prev, flatPoint];
-              return deduplicateHistory(merged).slice(-8);
-            });
+            node2LatestRef.current = flatPoint;
+            node2BufferRef.current = deduplicateHistory([...node2BufferRef.current, flatPoint]).slice(-50);
           }
 
-          // Trigger a silent prefetch of anomaly list to catch new alerts
-          axios.get('http://127.0.0.1:8000/api/anomalies/?limit=5')
-            .then(res => {
-              if (isMounted.current) setRecentAnomalies(res.data);
-            })
-            .catch(console.error);
+          // Flag that an anomaly fetch is needed on the next throttled interval tick
+          hasNewAnomaliesRef.current = true;
         }
       } catch (err) {
         console.error('Error parsing WebSocket message:', err);
@@ -207,8 +271,37 @@ export default function Overview() {
     // Establish socket
     connectWebSocket();
 
+    // High performance throttle interval to batch state updates (1Hz tick rate)
+    const flushInterval = setInterval(() => {
+      if (!isMounted.current) return;
+
+      let hasUpdate = false;
+      if (node1LatestRef.current) {
+        setNode1Latest(node1LatestRef.current);
+        setNode1History([...node1BufferRef.current]);
+        node1LatestRef.current = null;
+        hasUpdate = true;
+      }
+      if (node2LatestRef.current) {
+        setNode2Latest(node2LatestRef.current);
+        setNode2History([...node2BufferRef.current]);
+        node2LatestRef.current = null;
+        hasUpdate = true;
+      }
+
+      if (hasNewAnomaliesRef.current) {
+        hasNewAnomaliesRef.current = false;
+        axios.get('http://127.0.0.1:8000/api/anomalies/?limit=5')
+          .then(res => {
+            if (isMounted.current) setRecentAnomalies(res.data);
+          })
+          .catch(console.error);
+      }
+    }, 1000);
+
     return () => {
       isMounted.current = false;
+      clearInterval(flushInterval);
       if (wsRef.current) {
         wsRef.current.onclose = null; // Prevent triggering the onclose reconnect loop!
         wsRef.current.close();
@@ -404,124 +497,660 @@ export default function Overview() {
         
         {/* Node 1 - Realtime Machine Chart */}
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col">
-          <div className="mb-4">
-            <h3 className="text-sm font-bold text-slate-800">Node 1: Telemetry Mesin (Real-time)</h3>
-            <p className="text-xs text-slate-400">Grafik pergerakan suhu (°C) & getaran (g) mesin terdistribusi.</p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 pb-4 border-b border-slate-100">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800">Node 1: Telemetry Mesin</h3>
+              <p className="text-xs text-slate-400">Suhu mesin (°C), getaran (g)</p>
+              <p className="text-xs text-slate-400"> dan arus listrik (A) dari ESP32 #1.</p>
+            </div>
+            
+            {/* Control Bar for Chart 1 */}
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-center">
+              {/* Metric Toggles */}
+              <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                <button
+                  onClick={() => 
+                    setChart1VisibleMetrics(prev => 
+                      prev.includes('temperature') 
+                        ? prev.filter(m => m !== 'temperature') 
+                        : [...prev, 'temperature']
+                    )
+                  }
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart1VisibleMetrics.includes('temperature') 
+                      ? 'bg-dashboard-blue text-white shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Suhu
+                </button>
+                <button
+                  onClick={() => 
+                    setChart1VisibleMetrics(prev => 
+                      prev.includes('vibration') 
+                        ? prev.filter(m => m !== 'vibration') 
+                        : [...prev, 'vibration']
+                    )
+                  }
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart1VisibleMetrics.includes('vibration') 
+                      ? 'bg-indigo-600 text-white shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Getaran
+                </button>
+                <button
+                  onClick={() => 
+                    setChart1VisibleMetrics(prev => 
+                      prev.includes('current') 
+                        ? prev.filter(m => m !== 'current') 
+                        : [...prev, 'current']
+                    )
+                  }
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart1VisibleMetrics.includes('current') 
+                      ? 'bg-amber-500 text-white shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Arus
+                </button>
+              </div>
+
+              {/* Time Window Dropdown */}
+              <select
+                value={chart1PointsCount}
+                onChange={(e) => setChart1PointsCount(Number(e.target.value))}
+                className="px-2 py-1 bg-slate-50 text-[10px] font-bold text-slate-600 border border-slate-200 rounded-lg outline-none cursor-pointer focus:ring-1 focus:ring-dashboard-blue focus:border-dashboard-blue"
+              >
+                <option value={10}>10 Data</option>
+                <option value={20}>20 Data</option>
+                <option value={30}>30 Data</option>
+                <option value={50}>50 Data</option>
+              </select>
+
+              {/* Chart Type Switcher */}
+              <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                <button
+                  onClick={() => setChart1Type('area')}
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart1Type === 'area' 
+                      ? 'bg-white text-slate-800 shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Area
+                </button>
+                <button
+                  onClick={() => setChart1Type('line')}
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart1Type === 'line' 
+                      ? 'bg-white text-slate-800 shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Line
+                </button>
+              </div>
+            </div>
           </div>
           
           <div className="h-64 w-full mt-2">
             <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-              <AreaChart data={node1History} margin={{ top: 10, right: 10, left: -25, bottom: 20 }}>
-                <defs>
-                  <linearGradient id="colorTemp1" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#0984e3" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#0984e3" stopOpacity={0}/>
-                  </linearGradient>
-                  <linearGradient id="colorVib1" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis 
-                  dataKey="timestamp" 
-                  tickFormatter={formatTimestamp} 
-                  tick={{ fontSize: 9, fill: '#94a3b8' }}
-                  dx={-8}
-                  dy={8}
-                  angle={-30}
-                  textAnchor="end"
-                  height={45}
-                />
-                <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
-                <Tooltip 
-                  labelFormatter={(lbl, items) => {
-                    const item = items[0]?.payload as TelemetryPoint;
-                    return item ? `Waktu: ${new Date(item.timestamp).toLocaleString('id-ID')}` : '';
-                  }}
-                  formatter={(val, name) => [val, name === 'temperature' ? 'Suhu Mesin (°C)' : 'Getaran Mesin (g)']}
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="temperature" 
-                  stroke="#0984e3" 
-                  strokeWidth={2}
-                  fillOpacity={1} 
-                  fill="url(#colorTemp1)" 
-                  name="temperature"
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="vibration" 
-                  stroke="#6366f1" 
-                  strokeWidth={2}
-                  fillOpacity={1} 
-                  fill="url(#colorVib1)" 
-                  name="vibration"
-                />
-              </AreaChart>
+              {chart1Type === 'area' ? (
+                <AreaChart data={node1History.slice(-chart1PointsCount)} margin={{ top: 10, right: 10, left: -25, bottom: 20 }}>
+                  <defs>
+                    <linearGradient id="colorTemp1" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#0984e3" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#0984e3" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="colorVib1" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="colorCur1" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis 
+                    dataKey="timestamp" 
+                    tickFormatter={formatTimestamp} 
+                    tick={{ fontSize: 9, fill: '#94a3b8' }}
+                    dx={-8}
+                    dy={8}
+                    angle={-30}
+                    textAnchor="end"
+                    height={45}
+                  />
+                  <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
+                  <Tooltip 
+                    labelFormatter={(lbl, items) => {
+                      const item = items[0]?.payload as TelemetryPoint;
+                      return item ? `Waktu: ${new Date(item.timestamp).toLocaleString('id-ID')}` : '';
+                    }}
+                    formatter={(val, name) => [
+                      val,
+                      name === 'temperature' ? 'Suhu Mesin (°C)' :
+                      name === 'vibration'   ? 'Getaran Mesin (g)' : 'Arus Listrik (A)'
+                    ]}
+                  />
+                  {chart1VisibleMetrics.includes('temperature') && (
+                    <Area 
+                      type="monotone" 
+                      dataKey="temperature" 
+                      stroke="#0984e3" 
+                      strokeWidth={2}
+                      fillOpacity={1} 
+                      fill="url(#colorTemp1)" 
+                      name="temperature"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('vibration') && (
+                    <Area 
+                      type="monotone" 
+                      dataKey="vibration" 
+                      stroke="#6366f1" 
+                      strokeWidth={2}
+                      fillOpacity={1} 
+                      fill="url(#colorVib1)" 
+                      name="vibration"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('current') && (
+                    <Area 
+                      type="monotone" 
+                      dataKey="current" 
+                      stroke="#f59e0b" 
+                      strokeWidth={2}
+                      fillOpacity={1} 
+                      fill="url(#colorCur1)" 
+                      name="current"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('temperature') && (
+                    <ReferenceLine 
+                      y={thresholds.temp_machine} 
+                      stroke="#ef4444" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Suhu: ${thresholds.temp_machine}°C`, 
+                        fill: '#ef4444', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('vibration') && (
+                    <ReferenceLine 
+                      y={thresholds.vibration} 
+                      stroke="#6366f1" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Getar: ${thresholds.vibration}g`, 
+                        fill: '#6366f1', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('current') && (
+                    <ReferenceLine 
+                      y={thresholds.current} 
+                      stroke="#f59e0b" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Arus: ${thresholds.current}A`, 
+                        fill: '#f59e0b', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                </AreaChart>
+              ) : (
+                <LineChart data={node1History.slice(-chart1PointsCount)} margin={{ top: 10, right: 10, left: -25, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis 
+                    dataKey="timestamp" 
+                    tickFormatter={formatTimestamp} 
+                    tick={{ fontSize: 9, fill: '#94a3b8' }}
+                    dx={-8}
+                    dy={8}
+                    angle={-30}
+                    textAnchor="end"
+                    height={45}
+                  />
+                  <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
+                  <Tooltip 
+                    labelFormatter={(lbl, items) => {
+                      const item = items[0]?.payload as TelemetryPoint;
+                      return item ? `Waktu: ${new Date(item.timestamp).toLocaleString('id-ID')}` : '';
+                    }}
+                    formatter={(val, name) => [
+                      val,
+                      name === 'temperature' ? 'Suhu Mesin (°C)' :
+                      name === 'vibration'   ? 'Getaran Mesin (g)' : 'Arus Listrik (A)'
+                    ]}
+                  />
+                  {chart1VisibleMetrics.includes('temperature') && (
+                    <Line 
+                      type="monotone" 
+                      dataKey="temperature" 
+                      stroke="#0984e3" 
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      activeDot={{ r: 4 }}
+                      name="temperature"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('vibration') && (
+                    <Line 
+                      type="monotone" 
+                      dataKey="vibration" 
+                      stroke="#6366f1" 
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      activeDot={{ r: 4 }}
+                      name="vibration"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('current') && (
+                    <Line 
+                      type="monotone" 
+                      dataKey="current" 
+                      stroke="#f59e0b" 
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      activeDot={{ r: 4 }}
+                      name="current"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('temperature') && (
+                    <ReferenceLine 
+                      y={thresholds.temp_machine} 
+                      stroke="#ef4444" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Suhu: ${thresholds.temp_machine}°C`, 
+                        fill: '#ef4444', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('vibration') && (
+                    <ReferenceLine 
+                      y={thresholds.vibration} 
+                      stroke="#6366f1" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Getar: ${thresholds.vibration}g`, 
+                        fill: '#6366f1', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                  {chart1VisibleMetrics.includes('current') && (
+                    <ReferenceLine 
+                      y={thresholds.current} 
+                      stroke="#f59e0b" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Arus: ${thresholds.current}A`, 
+                        fill: '#f59e0b', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                </LineChart>
+              )}
             </ResponsiveContainer>
           </div>
         </div>
 
         {/* Node 2 - Realtime Environment Chart */}
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col">
-          <div className="mb-4">
-            <h3 className="text-sm font-bold text-slate-800">Node 2: Telemetry Lingkungan (Real-time)</h3>
-            <p className="text-xs text-slate-400">Grafik pergerakan kelembaban (%) & kadar gas (ppm) pabrik.</p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 pb-4 border-b border-slate-100">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800">Node 2: Telemetry Lingkungan</h3>
+              <p className="text-xs text-slate-400">Suhu ruangan (°C), kelembaban (%)</p>
+              <p className="text-xs text-slate-400"> dan kadar gas (ppm) dari ESP32 #2.</p>
+            </div>
+            
+            {/* Control Bar for Chart 2 */}
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-center">
+              {/* Metric Toggles */}
+              <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                <button
+                  onClick={() => 
+                    setChart2VisibleMetrics(prev => 
+                      prev.includes('temperature') 
+                        ? prev.filter(m => m !== 'temperature') 
+                        : [...prev, 'temperature']
+                    )
+                  }
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart2VisibleMetrics.includes('temperature') 
+                      ? 'bg-teal-600 text-white shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Suhu
+                </button>
+                <button
+                  onClick={() => 
+                    setChart2VisibleMetrics(prev => 
+                      prev.includes('humidity') 
+                        ? prev.filter(m => m !== 'humidity') 
+                        : [...prev, 'humidity']
+                    )
+                  }
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart2VisibleMetrics.includes('humidity') 
+                      ? 'bg-emerald-600 text-white shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Kelembaban
+                </button>
+                <button
+                  onClick={() => 
+                    setChart2VisibleMetrics(prev => 
+                      prev.includes('gas_level') 
+                        ? prev.filter(m => m !== 'gas_level') 
+                        : [...prev, 'gas_level']
+                    )
+                  }
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart2VisibleMetrics.includes('gas_level') 
+                      ? 'bg-rose-600 text-white shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Kadar Gas
+                </button>
+              </div>
+
+              {/* Time Window Dropdown */}
+              <select
+                value={chart2PointsCount}
+                onChange={(e) => setChart2PointsCount(Number(e.target.value))}
+                className="px-2 py-1 bg-slate-50 text-[10px] font-bold text-slate-600 border border-slate-200 rounded-lg outline-none cursor-pointer focus:ring-1 focus:ring-dashboard-blue focus:border-dashboard-blue"
+              >
+                <option value={10}>10 Data</option>
+                <option value={20}>20 Data</option>
+                <option value={30}>30 Data</option>
+                <option value={50}>50 Data</option>
+              </select>
+
+              {/* Chart Type Switcher */}
+              <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                <button
+                  onClick={() => setChart2Type('area')}
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart2Type === 'area' 
+                      ? 'bg-white text-slate-800 shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Area
+                </button>
+                <button
+                  onClick={() => setChart2Type('line')}
+                  className={`px-2 py-1 text-[9px] font-bold rounded-md transition-all cursor-pointer ${
+                    chart2Type === 'line' 
+                      ? 'bg-white text-slate-800 shadow-xs' 
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Line
+                </button>
+              </div>
+            </div>
           </div>
           
           <div className="h-64 w-full mt-2">
             <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
-              <AreaChart data={node2History} margin={{ top: 10, right: 10, left: -25, bottom: 20 }}>
-                <defs>
-                  <linearGradient id="colorHumid2" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                  </linearGradient>
-                  <linearGradient id="colorGas2" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis 
-                  dataKey="timestamp" 
-                  tickFormatter={formatTimestamp} 
-                  tick={{ fontSize: 9, fill: '#94a3b8' }}
-                  dx={-8}
-                  dy={8}
-                  angle={-30}
-                  textAnchor="end"
-                  height={45}
-                />
-                <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
-                <Tooltip 
-                  labelFormatter={(lbl, items) => {
-                    const item = items[0]?.payload as TelemetryPoint;
-                    return item ? `Waktu: ${new Date(item.timestamp).toLocaleString('id-ID')}` : '';
-                  }}
-                  formatter={(val, name) => [val, name === 'humidity' ? 'Kelembaban (%)' : 'Kadar Gas (ppm)']}
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="humidity" 
-                  stroke="#10b981" 
-                  strokeWidth={2}
-                  fillOpacity={1} 
-                  fill="url(#colorHumid2)" 
-                  name="humidity"
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="gas_level" 
-                  stroke="#f43f5e" 
-                  strokeWidth={2}
-                  fillOpacity={1} 
-                  fill="url(#colorGas2)" 
-                  name="gas_level"
-                />
-              </AreaChart>
+              {chart2Type === 'area' ? (
+                <AreaChart data={node2History.slice(-chart2PointsCount)} margin={{ top: 10, right: 10, left: -25, bottom: 20 }}>
+                  <defs>
+                    <linearGradient id="colorTempRoom2" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#14b8a6" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#14b8a6" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="colorHumid2" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="colorGas2" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis 
+                    dataKey="timestamp" 
+                    tickFormatter={formatTimestamp} 
+                    tick={{ fontSize: 9, fill: '#94a3b8' }}
+                    dx={-8}
+                    dy={8}
+                    angle={-30}
+                    textAnchor="end"
+                    height={45}
+                  />
+                  <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
+                  <Tooltip 
+                    labelFormatter={(lbl, items) => {
+                      const item = items[0]?.payload as TelemetryPoint;
+                      return item ? `Waktu: ${new Date(item.timestamp).toLocaleString('id-ID')}` : '';
+                    }}
+                    formatter={(val, name) => [
+                      val,
+                      name === 'temperature' ? 'Suhu Ruangan (°C)' :
+                      name === 'humidity'    ? 'Kelembaban (%)' : 'Kadar Gas (ppm)'
+                    ]}
+                  />
+                  {chart2VisibleMetrics.includes('temperature') && (
+                    <Area 
+                      type="monotone" 
+                      dataKey="temperature" 
+                      stroke="#14b8a6" 
+                      strokeWidth={2}
+                      fillOpacity={1} 
+                      fill="url(#colorTempRoom2)" 
+                      name="temperature"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('humidity') && (
+                    <Area 
+                      type="monotone" 
+                      dataKey="humidity" 
+                      stroke="#10b981" 
+                      strokeWidth={2}
+                      fillOpacity={1} 
+                      fill="url(#colorHumid2)" 
+                      name="humidity"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('gas_level') && (
+                    <Area 
+                      type="monotone" 
+                      dataKey="gas_level" 
+                      stroke="#f43f5e" 
+                      strokeWidth={2}
+                      fillOpacity={1} 
+                      fill="url(#colorGas2)" 
+                      name="gas_level"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('temperature') && (
+                    <ReferenceLine 
+                      y={thresholds.temp_room} 
+                      stroke="#14b8a6" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Suhu: ${thresholds.temp_room}°C`, 
+                        fill: '#14b8a6', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('humidity') && (
+                    <ReferenceLine 
+                      y={thresholds.humidity} 
+                      stroke="#10b981" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Lembab: ${thresholds.humidity}%`, 
+                        fill: '#10b981', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('gas_level') && (
+                    <ReferenceLine 
+                      y={thresholds.gas_level} 
+                      stroke="#ef4444" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Gas: ${thresholds.gas_level} ppm`, 
+                        fill: '#ef4444', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                </AreaChart>
+              ) : (
+                <LineChart data={node2History.slice(-chart2PointsCount)} margin={{ top: 10, right: 10, left: -25, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis 
+                    dataKey="timestamp" 
+                    tickFormatter={formatTimestamp} 
+                    tick={{ fontSize: 9, fill: '#94a3b8' }}
+                    dx={-8}
+                    dy={8}
+                    angle={-30}
+                    textAnchor="end"
+                    height={45}
+                  />
+                  <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
+                  <Tooltip 
+                    labelFormatter={(lbl, items) => {
+                      const item = items[0]?.payload as TelemetryPoint;
+                      return item ? `Waktu: ${new Date(item.timestamp).toLocaleString('id-ID')}` : '';
+                    }}
+                    formatter={(val, name) => [
+                      val,
+                      name === 'temperature' ? 'Suhu Ruangan (°C)' :
+                      name === 'humidity'    ? 'Kelembaban (%)' : 'Kadar Gas (ppm)'
+                    ]}
+                  />
+                  {chart2VisibleMetrics.includes('temperature') && (
+                    <Line 
+                      type="monotone" 
+                      dataKey="temperature" 
+                      stroke="#14b8a6" 
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      activeDot={{ r: 4 }}
+                      name="temperature"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('humidity') && (
+                    <Line 
+                      type="monotone" 
+                      dataKey="humidity" 
+                      stroke="#10b981" 
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      activeDot={{ r: 4 }}
+                      name="humidity"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('gas_level') && (
+                    <Line 
+                      type="monotone" 
+                      dataKey="gas_level" 
+                      stroke="#f43f5e" 
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      activeDot={{ r: 4 }}
+                      name="gas_level"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('temperature') && (
+                    <ReferenceLine 
+                      y={thresholds.temp_room} 
+                      stroke="#14b8a6" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Suhu: ${thresholds.temp_room}°C`, 
+                        fill: '#14b8a6', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('humidity') && (
+                    <ReferenceLine 
+                      y={thresholds.humidity} 
+                      stroke="#10b981" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Lembab: ${thresholds.humidity}%`, 
+                        fill: '#10b981', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                  {chart2VisibleMetrics.includes('gas_level') && (
+                    <ReferenceLine 
+                      y={thresholds.gas_level} 
+                      stroke="#ef4444" 
+                      strokeDasharray="4 4" 
+                      label={{ 
+                        value: `Limit Gas: ${thresholds.gas_level} ppm`, 
+                        fill: '#ef4444', 
+                        fontSize: 9, 
+                        position: 'top',
+                        fontWeight: 'bold'
+                      }} 
+                    />
+                  )}
+                </LineChart>
+              )}
             </ResponsiveContainer>
           </div>
         </div>
@@ -611,7 +1240,7 @@ export default function Overview() {
                         <td colSpan={4} className="p-4 text-center text-slate-400 text-[11px]">Belum ada log masuk</td>
                       </tr>
                     ) : (
-                      [...node1History].reverse().map((item, idx) => (
+                      [...node1History].reverse().slice(0, 8).map((item, idx) => (
                         <tr key={idx} className="hover:bg-slate-50 transition-colors">
                           <td className="p-2 font-mono text-[10px] text-slate-500">{formatTimestamp(item.timestamp)}</td>
                           <td className="p-2 font-semibold text-slate-700">{item.temperature?.toFixed(1)}°C</td>
@@ -644,7 +1273,7 @@ export default function Overview() {
                         <td colSpan={4} className="p-4 text-center text-slate-400 text-[11px]">Belum ada log masuk</td>
                       </tr>
                     ) : (
-                      [...node2History].reverse().map((item, idx) => (
+                      [...node2History].reverse().slice(0, 8).map((item, idx) => (
                         <tr key={idx} className="hover:bg-slate-50 transition-colors">
                           <td className="p-2 font-mono text-[10px] text-slate-500">{formatTimestamp(item.timestamp)}</td>
                           <td className="p-2 font-semibold text-slate-700">{item.temperature?.toFixed(1)}°C</td>

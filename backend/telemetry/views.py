@@ -103,27 +103,51 @@ def sensor_thresholds_api(request):
     from .serializers import SensorThresholdSerializer
 
     # Inisialisasi awal jika database kosong demi kemudahan deploy
+    # 6 metric sesuai arsitektur TA:
+    # Node 1 (Machine): temp_machine, vibration, current
+    # Node 2 (Environment): temp_room, humidity, gas_level
     metrics_defaults = [
         {
-            "metric": "temperature", 
-            "value": float(getattr(settings, 'THRESHOLD_TEMP_MAX', 70.0)), 
-            "label": "Suhu Mesin Maksimum", 
-            "unit": "°C", 
-            "description": "Batas aman suhu operasional untuk mendeteksi overheat pada mesin Node 1."
+            "metric": "temp_machine",
+            "value": float(getattr(settings, 'THRESHOLD_TEMP_MAX', 70.0)),
+            "label": "Suhu Mesin Maksimum (Node 1)",
+            "unit": "°C",
+            "description": "Batas aman suhu operasional mesin dari sensor DHT22/DS18B20 di Node 1. Melebihi batas ini mengindikasikan overheat pada motor/mesin."
         },
         {
-            "metric": "vibration", 
-            "value": float(getattr(settings, 'THRESHOLD_VIB_MAX', 1.5)), 
-            "label": "Getaran Mesin Maksimum", 
-            "unit": "g", 
-            "description": "Batas aman getaran mesin dari sensor MPU6050 di Node 1. Getaran tinggi menunjukkan potensi malfungsi fisik."
+            "metric": "vibration",
+            "value": float(getattr(settings, 'THRESHOLD_VIB_MAX', 1.5)),
+            "label": "Getaran Mesin Maksimum (Node 1)",
+            "unit": "g",
+            "description": "Batas aman getaran mesin dari sensor MPU6050 di Node 1. Getaran tinggi menunjukkan potensi malfungsi atau ketidakseimbangan fisik."
         },
         {
-            "metric": "gas_level", 
-            "value": float(getattr(settings, 'THRESHOLD_GAS_MAX', 300.0)), 
-            "label": "Kadar Gas Maksimum", 
-            "unit": "ppm", 
-            "description": "Batas aman kebocoran gas/asap di Node 2 dari sensor MQ-2."
+            "metric": "current",
+            "value": float(getattr(settings, 'THRESHOLD_CURRENT_MAX', 10.0)),
+            "label": "Arus Listrik Maksimum (Node 1)",
+            "unit": "A",
+            "description": "Batas aman konsumsi arus listrik mesin dari sensor ACS712 di Node 1. Arus berlebih dapat mengindikasikan beban mesin overload atau korsleting."
+        },
+        {
+            "metric": "temp_room",
+            "value": float(getattr(settings, 'THRESHOLD_TEMP_ROOM_MAX', 35.0)),
+            "label": "Suhu Ruangan Maksimum (Node 2)",
+            "unit": "°C",
+            "description": "Batas aman suhu ruangan pabrik dari sensor DHT22 di Node 2. Suhu ruangan yang terlalu tinggi dapat membahayakan pekerja dan perangkat elektronik."
+        },
+        {
+            "metric": "humidity",
+            "value": float(getattr(settings, 'THRESHOLD_HUMIDITY_MAX', 80.0)),
+            "label": "Kelembaban Ruangan Maksimum (Node 2)",
+            "unit": "%",
+            "description": "Batas aman kelembaban udara ruangan dari sensor DHT22 di Node 2. Kelembaban berlebih dapat menyebabkan korosi dan kerusakan komponen elektronik."
+        },
+        {
+            "metric": "gas_level",
+            "value": float(getattr(settings, 'THRESHOLD_GAS_MAX', 300.0)),
+            "label": "Kadar Gas/Asap Maksimum (Node 2)",
+            "unit": "ppm",
+            "description": "Batas aman konsentrasi gas/asap di ruangan dari sensor MQ-2 di Node 2. Nilai di atas batas mengindikasikan kebocoran gas berbahaya atau kebakaran."
         }
     ]
 

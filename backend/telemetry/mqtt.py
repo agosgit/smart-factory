@@ -92,41 +92,53 @@ def process_telemetry_data(payload, channel_layer):
     # Ambil ambang batas dari database secara dinamis dengan fallback aman ke settings / default
     try:
         from telemetry.models import SensorThreshold
-        temp_obj = SensorThreshold.objects.filter(metric="temperature").first()
-        temp_max = temp_obj.value if temp_obj else float(settings.THRESHOLD_TEMP_MAX)
+        # Pisah threshold suhu: temp_machine (Node 1) vs temp_room (Node 2)
+        if node_id == 'node_1':
+            temp_obj = SensorThreshold.objects.filter(metric="temp_machine").first()
+            temp_max = temp_obj.value if temp_obj else float(getattr(settings, 'THRESHOLD_TEMP_MAX', 70.0))
+        else:
+            temp_obj = SensorThreshold.objects.filter(metric="temp_room").first()
+            temp_max = temp_obj.value if temp_obj else float(getattr(settings, 'THRESHOLD_TEMP_ROOM_MAX', 35.0))
     except Exception:
-        try:
-            temp_max = float(settings.THRESHOLD_TEMP_MAX)
-        except Exception:
-            temp_max = 70.0
+        temp_max = 70.0 if node_id == 'node_1' else 35.0
 
     try:
         from telemetry.models import SensorThreshold
         vib_obj = SensorThreshold.objects.filter(metric="vibration").first()
-        vib_max = vib_obj.value if vib_obj else float(settings.THRESHOLD_VIB_MAX)
+        vib_max = vib_obj.value if vib_obj else float(getattr(settings, 'THRESHOLD_VIB_MAX', 1.5))
     except Exception:
-        try:
-            vib_max = float(settings.THRESHOLD_VIB_MAX)
-        except Exception:
-            vib_max = 1.5
+        vib_max = 1.5
+
+    try:
+        from telemetry.models import SensorThreshold
+        current_obj = SensorThreshold.objects.filter(metric="current").first()
+        current_max = current_obj.value if current_obj else float(getattr(settings, 'THRESHOLD_CURRENT_MAX', 10.0))
+    except Exception:
+        current_max = 10.0
+
+    try:
+        from telemetry.models import SensorThreshold
+        humidity_obj = SensorThreshold.objects.filter(metric="humidity").first()
+        humidity_max = humidity_obj.value if humidity_obj else float(getattr(settings, 'THRESHOLD_HUMIDITY_MAX', 80.0))
+    except Exception:
+        humidity_max = 80.0
 
     try:
         from telemetry.models import SensorThreshold
         gas_obj = SensorThreshold.objects.filter(metric="gas_level").first()
-        gas_max = gas_obj.value if gas_obj else float(settings.THRESHOLD_GAS_MAX)
+        gas_max = gas_obj.value if gas_obj else float(getattr(settings, 'THRESHOLD_GAS_MAX', 300.0))
     except Exception:
-        try:
-            gas_max = float(settings.THRESHOLD_GAS_MAX)
-        except Exception:
-            gas_max = 300.0
+        gas_max = 300.0
 
 
     if temperature is not None and temperature > temp_max:
+        metric_name = "temp_machine" if node_id == "node_1" else "temp_room"
+        label = "Suhu Mesin" if node_id == "node_1" else "Suhu Ruangan"
         anomalies_detected.append({
-            "metric": "temperature",
+            "metric": metric_name,
             "value": temperature,
             "threshold": temp_max,
-            "message": f"Suhu tinggi terdeteksi! Nilai: {temperature}°C melebihi batas aman {temp_max}°C."
+            "message": f"{label} tinggi terdeteksi! Nilai: {temperature}°C melebihi batas aman {temp_max}°C."
         })
 
     if vibration is not None and vibration > vib_max:
@@ -135,6 +147,22 @@ def process_telemetry_data(payload, channel_layer):
             "value": vibration,
             "threshold": vib_max,
             "message": f"Getaran tidak wajar terdeteksi pada mesin! Getaran: {vibration}g melebihi ambang batas {vib_max}g."
+        })
+
+    if current is not None and current > current_max:
+        anomalies_detected.append({
+            "metric": "current",
+            "value": current,
+            "threshold": current_max,
+            "message": f"Arus listrik berlebih terdeteksi! Arus: {current}A melebihi batas aman {current_max}A."
+        })
+
+    if humidity is not None and humidity > humidity_max:
+        anomalies_detected.append({
+            "metric": "humidity",
+            "value": humidity,
+            "threshold": humidity_max,
+            "message": f"Kelembaban ruangan berlebih! Nilai: {humidity}% melebihi batas aman {humidity_max}%."
         })
 
     if gas_level is not None and gas_level > gas_max:

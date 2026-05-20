@@ -79,7 +79,7 @@ try:
         print(f"\n[PUBLISH] {TOPIC}")
         print(payload_json)
 
-        time.sleep(random.uniform(4, 5))
+        time.sleep(random.uniform(1, 3))
 
 except KeyboardInterrupt:
 

@@ -48,7 +48,7 @@ export default function Login() {
           <Cpu className="h-7 w-7 text-white" />
         </div>
         <h2 className="mt-4 text-center text-2xl font-extrabold text-slate-800 tracking-tight">
-          DHT11 TELEMETRY SYSTEM
+          TELEMETRY SYSTEM
         </h2>
         <p className="mt-1 text-center text-xs text-slate-500 font-semibold tracking-wide uppercase">
           Smart Factory Admin Panel
