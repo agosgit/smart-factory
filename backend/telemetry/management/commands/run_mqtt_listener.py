@@ -140,10 +140,26 @@ class Command(BaseCommand):
         # visualisasi grafik frontend akan tetap sinkron & runtut sesuai waktu aktual pembacaan di lapangan.
         if timestamp_str:
             timestamp = parse_datetime(timestamp_str)
+            if not timestamp and isinstance(timestamp_str, str) and timestamp_str.isdigit():
+                ts_int = int(timestamp_str)
+                if ts_int > 1000000000000:
+                    timestamp = datetime.fromtimestamp(ts_int / 1000.0, tz=timezone.utc)
+                elif ts_int > 1000000000:
+                    timestamp = datetime.fromtimestamp(ts_int, tz=timezone.utc)
+                if timestamp:
+                    timestamp = timezone.localtime(timestamp)
             if not timestamp:
                 timestamp = timezone.now()
         else:
-            timestamp = timezone.now()
+            timestamp_ms = payload.get("timestamp_ms")
+            if isinstance(timestamp_ms, (int, float)) and timestamp_ms > 1000000000000:
+                timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+                timestamp = timezone.localtime(timestamp)
+            elif isinstance(timestamp_ms, (int, float)) and timestamp_ms > 1000000000:
+                timestamp = datetime.fromtimestamp(timestamp_ms, tz=timezone.utc)
+                timestamp = timezone.localtime(timestamp)
+            else:
+                timestamp = timezone.now()
 
         # Ekstraksi metrik sensor individual (nullable jika sensor tidak ada di node pengirim)
         temperature = sensor_data.get("temperature")
@@ -201,6 +217,11 @@ class Command(BaseCommand):
                 "created_at": anomaly_obj.created_at.isoformat()
             })
             self.stdout.write(self.style.WARNING(f"ALERT ANOMALI: {anomaly['message']}"))
+
+        # Hindari duplikat ketika payload yang sama diproses lebih dari sekali
+        if TelemetryData.objects.filter(node_id=node_id, raw_payload=payload).exists():
+            self.stdout.write(self.style.WARNING(f"Duplicate telemetry ignored for {node_id} @ {timestamp}"))
+            return
 
         # Simpan rekaman telemetri utama ke MySQL database
         telemetry_record = TelemetryData.objects.create(

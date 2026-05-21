@@ -28,8 +28,10 @@ def start_mqtt_listener():
 
 def _mqtt_loop():
     channel_layer = get_channel_layer()
-    client_id = settings.MQTT_CLIENT_ID
-    client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311)
+    # Tambahkan PID agar setiap proses Django menggunakan client_id yang unik.
+    # Ini mencegah broker me-kick koneksi lama (penyebab RC=7 disconnect loop).
+    client_id = f"{settings.MQTT_CLIENT_ID}_{os.getpid()}"
+    client = mqtt.Client(client_id=client_id, clean_session=True, protocol=mqtt.MQTTv311)
     
     client.username_pw_set(
         username=settings.MQTT_USER,
@@ -57,8 +59,13 @@ def _mqtt_loop():
         except Exception as e:
             print(f"[ERROR] MQTT Thread failed to process incoming message: {e}")
             
+    def on_disconnect(client, userdata, rc):
+        if rc != 0:
+            print(f"[WARN] MQTT Thread terputus mendadak (rc={rc}). Auto-reconnect aktif via loop_forever...")
+
     client.on_connect = on_connect
     client.on_message = on_message
+    client.on_disconnect = on_disconnect
     
     broker_host = settings.MQTT_HOST
     broker_port = settings.MQTT_PORT
@@ -84,10 +91,26 @@ def process_telemetry_data(payload, channel_layer):
 
     if timestamp_str:
         timestamp = parse_datetime(timestamp_str)
+        if not timestamp and isinstance(timestamp_str, str) and timestamp_str.isdigit():
+            ts_int = int(timestamp_str)
+            if ts_int > 1000000000000:
+                timestamp = datetime.fromtimestamp(ts_int / 1000.0, tz=timezone.utc)
+            elif ts_int > 1000000000:
+                timestamp = datetime.fromtimestamp(ts_int, tz=timezone.utc)
+            if timestamp:
+                timestamp = timezone.localtime(timestamp)
         if not timestamp:
             timestamp = timezone.now()
     else:
-        timestamp = timezone.now()
+        timestamp_ms = payload.get("timestamp_ms")
+        if isinstance(timestamp_ms, (int, float)) and timestamp_ms > 1000000000000:
+            timestamp = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+            timestamp = timezone.localtime(timestamp)
+        elif isinstance(timestamp_ms, (int, float)) and timestamp_ms > 1000000000:
+            timestamp = datetime.fromtimestamp(timestamp_ms, tz=timezone.utc)
+            timestamp = timezone.localtime(timestamp)
+        else:
+            timestamp = timezone.now()
 
     temperature = sensor_data.get("temperature")
     vibration = sensor_data.get("vibration")
@@ -97,16 +120,7 @@ def process_telemetry_data(payload, channel_layer):
     gas_level = sensor_data.get("gas_level")
 
     # Hindari duplikat ketika payload yang sama diproses lebih dari sekali
-    if TelemetryData.objects.filter(
-        node_id=node_id,
-        timestamp=timestamp,
-        temperature=temperature,
-        vibration=vibration,
-        current=current,
-        voltage=voltage,
-        humidity=humidity,
-        gas_level=gas_level
-    ).exists():
+    if TelemetryData.objects.filter(node_id=node_id, raw_payload=payload).exists():
         print(f"[WARN] Duplicate telemetry ignored for {node_id} @ {timestamp}")
         return
 
