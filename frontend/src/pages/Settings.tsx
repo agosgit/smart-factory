@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Sliders, Thermometer, Activity, AlertTriangle, Save, 
+import {
+  Sliders, Thermometer, Activity, AlertTriangle, Save,
   RotateCcw, CheckCircle2, AlertCircle, RefreshCw, HelpCircle, ShieldAlert,
   Zap, Droplets, Wind
 } from 'lucide-react';
@@ -67,9 +67,9 @@ export default function Settings() {
         metric: item.metric,
         value: item.value
       }));
-      
+
       const response = await axios.post('http://127.0.0.1:8000/api/thresholds/', payload);
-      
+
       if (response.data.success) {
         setOriginalThresholds(JSON.parse(JSON.stringify(thresholds)));
         setToastMessage('Semua batas ambang berhasil disimpan secara permanen!');
@@ -197,7 +197,7 @@ export default function Settings() {
           <h2 className="text-2xl font-bold text-slate-800">Pengaturan Ambang Batas</h2>
           <p className="text-sm text-slate-500 mt-1">Konfigurasi batas anomali sensor untuk deteksi siaga real-time di seluruh area pabrik.</p>
         </div>
-        <button 
+        <button
           onClick={fetchThresholds}
           disabled={loading || saving}
           className="flex items-center justify-center gap-2 px-4 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-lg transition-colors disabled:opacity-50"
@@ -218,7 +218,7 @@ export default function Settings() {
           <AlertCircle className="h-16 w-16 text-rose-500 mb-4" />
           <h3 className="text-lg font-bold text-slate-800">Koneksi Backend Terputus</h3>
           <p className="text-sm text-slate-500 max-w-md mt-2">{error}</p>
-          <button 
+          <button
             onClick={fetchThresholds}
             className="mt-6 px-5 py-2.5 bg-dashboard-blue hover:bg-dashboard-hover text-white text-xs font-bold rounded-lg shadow-sm transition-colors"
           >
@@ -227,17 +227,17 @@ export default function Settings() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          
+
           {/* LEFT: SLIDERS & INPUTS (8/12) */}
           <div className="lg:col-span-8 space-y-6">
-            
+
             {thresholds.map((threshold, index) => {
               const style = getMetricStyling(threshold.metric);
               const isChanged = threshold.value !== originalThresholds.find(o => o.metric === threshold.metric)?.value;
-              
+
               return (
-                <div 
-                  key={index} 
+                <div
+                  key={index}
                   className={`bg-white rounded-2xl border ${isChanged ? 'border-amber-400 shadow-amber-50/50' : 'border-slate-200'} shadow-sm p-6 transition-all duration-200 relative overflow-hidden`}
                 >
                   {isChanged && (
@@ -251,7 +251,7 @@ export default function Settings() {
                     <div className={`p-3 rounded-xl ${style.bgColor} border ${style.borderColor}`}>
                       {style.icon}
                     </div>
-                    
+
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="font-bold text-slate-800 text-base">{threshold.label}</h3>
@@ -265,7 +265,7 @@ export default function Settings() {
 
                   {/* Card Control Inputs: Slider & Number Side-by-Side */}
                   <div className="mt-6 grid grid-cols-1 md:grid-cols-12 gap-6 items-center border-t border-slate-100 pt-6">
-                    
+
                     {/* Slider Control (8 cols on md) */}
                     <div className="md:col-span-8 flex flex-col space-y-2">
                       <div className="flex justify-between text-[10px] text-slate-400 font-mono font-bold">
@@ -273,8 +273,8 @@ export default function Settings() {
                         <span className="text-slate-600">Luncurkan untuk mengubah</span>
                         <span>Max: {style.sliderMax}{threshold.unit}</span>
                       </div>
-                      
-                      <input 
+
+                      <input
                         type="range"
                         min={style.sliderMin}
                         max={style.sliderMax}
@@ -350,18 +350,18 @@ export default function Settings() {
 
           {/* RIGHT: THESIS/INFO PANEL (4/12) */}
           <div className="lg:col-span-4 space-y-6">
-            
+
             <div className="bg-gradient-to-br from-dashboard-blue to-dashboard-hover text-white rounded-2xl p-6 shadow-md border border-white/10 relative overflow-hidden">
               <div className="absolute top-0 right-0 w-24 h-24 bg-white/5 rounded-full -mr-8 -mt-8" />
               <HelpCircle className="h-10 w-10 text-white/30 mb-4" />
-              
+
               <h3 className="font-bold text-base">Bagaimana Fitur Ini Bekerja?</h3>
               <p className="text-xs text-white/80 mt-2 leading-relaxed font-medium">
                 Ambang batas ini terintegrasi secara dinamis di seluruh lapisan arsitektur IoT terdistribusi:
               </p>
-              
+
               <div className="mt-6 space-y-4">
-                
+
                 <div className="flex gap-3 items-start text-xs">
                   <div className="h-5 w-5 bg-white/20 rounded-full flex items-center justify-center font-bold text-[10px] shrink-0">1</div>
                   <div>
@@ -398,8 +398,8 @@ export default function Settings() {
             </div>
 
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 text-xs space-y-4">
-              <h4 className="font-bold text-slate-800 text-sm border-b border-slate-100 pb-2">Informasi Standar Tugas Akhir</h4>
-              
+              <h4 className="font-bold text-slate-800 text-sm border-b border-slate-100 pb-2">Informasi Standar</h4>
+
               <div>
                 <p className="font-bold text-slate-500">Nilai Default Standard:</p>
                 <div className="mt-2 space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-100 font-mono text-[10px] text-slate-600">
@@ -414,12 +414,12 @@ export default function Settings() {
                 </div>
               </div>
 
-              <div>
+              {/* <div>
                 <p className="font-bold text-slate-500">Penting untuk Sidang TA:</p>
                 <p className="text-slate-400 mt-1 leading-normal font-medium">
                   Fitur ini menaikkan level sistem dari pemantauan statis (*Read-only*) menjadi sistem kontrol industri interaktif (*Read-Write Control System*), yang merupakan poin penilaian tinggi dalam rubrik penguji sistem IoT terdistribusi.
                 </p>
-              </div>
+              </div> */}
             </div>
 
           </div>

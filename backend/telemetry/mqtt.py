@@ -12,7 +12,15 @@ import paho.mqtt.client as mqtt
 
 from telemetry.models import TelemetryData, AnomalyLog
 
+listener_started = False
+
+
 def start_mqtt_listener():
+    global listener_started
+    if listener_started:
+        return
+    listener_started = True
+
     # Jalankan loop MQTT dalam thread daemon terpisah agar tidak memblokir port utama Django
     thread = threading.Thread(target=_mqtt_loop, daemon=True)
     thread.start()
@@ -20,7 +28,7 @@ def start_mqtt_listener():
 
 def _mqtt_loop():
     channel_layer = get_channel_layer()
-    client_id = f"{settings.MQTT_CLIENT_ID}_thread"
+    client_id = settings.MQTT_CLIENT_ID
     client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311)
     
     client.username_pw_set(
@@ -39,6 +47,7 @@ def _mqtt_loop():
     def on_message(client, userdata, msg):
         topic = msg.topic
         payload_str = msg.payload.decode('utf-8')
+        print(f"[MQTT] on_message mid={msg.mid} dup={msg.dup} qos={msg.qos} topic={topic}")
         try:
             payload = json.loads(payload_str)
             if "status" in topic:
@@ -86,6 +95,20 @@ def process_telemetry_data(payload, channel_layer):
     voltage = sensor_data.get("voltage")
     humidity = sensor_data.get("humidity")
     gas_level = sensor_data.get("gas_level")
+
+    # Hindari duplikat ketika payload yang sama diproses lebih dari sekali
+    if TelemetryData.objects.filter(
+        node_id=node_id,
+        timestamp=timestamp,
+        temperature=temperature,
+        vibration=vibration,
+        current=current,
+        voltage=voltage,
+        humidity=humidity,
+        gas_level=gas_level
+    ).exists():
+        print(f"[WARN] Duplicate telemetry ignored for {node_id} @ {timestamp}")
+        return
 
     anomalies_detected = []
 

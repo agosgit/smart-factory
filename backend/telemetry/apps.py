@@ -1,20 +1,20 @@
-from django.apps import AppConfig
 import os
+import sys
+from django.apps import AppConfig
 
 class TelemetryConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'telemetry'
 
     def ready(self):
-        # Mencegah duplikasi thread saat Django melakukan auto-reload di mode development
-        # RUN_MAIN didefinisikan oleh Django hanya pada proses anak aktif pengelola request
-        if os.environ.get('RUN_MAIN') == 'true' or not os.environ.get('RUN_MAIN'):
-            # Jika dijalankan via command python manage.py runserver, RUN_MAIN harus bernilai 'true'
-            # Ini mencegah thread berjalan ganda pada parent process Django
-            import sys
-            is_runserver = 'runserver' in sys.argv
-            if is_runserver and os.environ.get('RUN_MAIN') != 'true':
-                return
-                
-            from .mqtt import start_mqtt_listener
+        from .mqtt import start_mqtt_listener
+
+        # Jalankan MQTT listener otomatis hanya saat server ASGI dijalankan,
+        # bukan saat menjalankan migrasi, shell, atau perintah manajemen lain.
+        # Di mode DEBUG dengan autoreload, pastikan hanya proses utama yang memulai listener.
+        server_commands = {'runserver', 'daphne', 'uvicorn', 'gunicorn'}
+        if os.environ.get('RUN_MAIN') == 'true' and any(command in sys.argv for command in server_commands):
+            print(f"[DEBUG] TelemetryConfig.ready(): RUN_MAIN={os.environ.get('RUN_MAIN')} sys.argv={sys.argv}")
             start_mqtt_listener()
+        else:
+            print(f"[DEBUG] TelemetryConfig.ready(): listener not started. RUN_MAIN={os.environ.get('RUN_MAIN')} sys.argv={sys.argv}")

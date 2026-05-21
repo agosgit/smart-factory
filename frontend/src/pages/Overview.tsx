@@ -182,6 +182,12 @@ export default function Overview() {
     }
   };
 
+  const getBackendHost = () => window.location.hostname || '127.0.0.1';
+  const getWebSocketUrl = () => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${getBackendHost()}:8000/ws/telemetry/`;
+  };
+
   // Native WebSocket connection with auto-reconnect
   const connectWebSocket = () => {
     if (!isMounted.current) return;
@@ -194,7 +200,7 @@ export default function Overview() {
 
     setConnectionStatus('RECONNECTING');
     
-    const wsUrl = 'ws://127.0.0.1:8000/ws/telemetry/';
+    const wsUrl = getWebSocketUrl();
     console.log('Menghubungkan ke WebSocket:', wsUrl);
     
     const ws = new WebSocket(wsUrl);
