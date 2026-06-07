@@ -13,6 +13,7 @@ import paho.mqtt.client as mqtt
 from telemetry.models import TelemetryData, AnomalyLog
 
 listener_started = False
+_mqtt_client = None  # Referensi global ke MQTT client aktif untuk publish threshold
 
 
 def start_mqtt_listener():
@@ -27,11 +28,13 @@ def start_mqtt_listener():
     print("[OK] MQTT background listener thread spawned successfully!")
 
 def _mqtt_loop():
+    global _mqtt_client
     channel_layer = get_channel_layer()
     # Tambahkan PID agar setiap proses Django menggunakan client_id yang unik.
     # Ini mencegah broker me-kick koneksi lama (penyebab RC=7 disconnect loop).
     client_id = f"{settings.MQTT_CLIENT_ID}_{os.getpid()}"
     client = mqtt.Client(client_id=client_id, clean_session=True, protocol=mqtt.MQTTv311)
+    _mqtt_client = client
     
     client.username_pw_set(
         username=settings.MQTT_USER,
@@ -43,6 +46,8 @@ def _mqtt_loop():
             print("[OK] MQTT Thread successfully connected to Mosquitto Broker!")
             client.subscribe("factory/+/telemetry", qos=1)
             client.subscribe("factory/gateway/status", qos=1)
+            # Segera kirim threshold terkini ke firmware setelah koneksi berhasil
+            publish_thresholds(client)
         else:
             print(f"[ERROR] MQTT Thread connection failed with code: {rc}")
             
@@ -81,7 +86,45 @@ def _mqtt_loop():
             
     client.loop_forever()
 
+def publish_thresholds(client=None):
+    """
+    Publish semua nilai threshold saat ini ke topic factory/config/threshold.
+    Gunakan retain=True agar firmware yang baru connect langsung mendapat nilai terbaru.
+    Bisa dipanggil dengan client tertentu (mis. dari on_connect) atau
+    menggunakan _mqtt_client global (mis. dari views.py setelah update DB).
+    """
+    global _mqtt_client
+    target_client = client or _mqtt_client
+
+    if target_client is None or not target_client.is_connected():
+        print("[THRESHOLD] MQTT client belum terhubung, skip publish threshold.")
+        return
+
+    try:
+        from telemetry.models import SensorThreshold
+        thresholds = SensorThreshold.objects.all()
+        payload = {t.metric: t.value for t in thresholds}
+        if not payload:
+            print("[THRESHOLD] Tidak ada threshold di database, skip publish.")
+            return
+
+        payload_str = json.dumps(payload)
+        result = target_client.publish(
+            "factory/config/threshold",
+            payload_str,
+            qos=1,
+            retain=True  # Retain agar node yang baru connect langsung dapat nilai terkini
+        )
+        if result.rc == 0:
+            print(f"[THRESHOLD] Published ke factory/config/threshold: {payload_str}")
+        else:
+            print(f"[THRESHOLD] Gagal publish threshold, rc={result.rc}")
+    except Exception as e:
+        print(f"[THRESHOLD] Error saat publish threshold: {e}")
+
+
 def process_telemetry_data(payload, channel_layer):
+
     node_id = payload.get("node_id")
     timestamp_str = payload.get("timestamp")
     sensor_data = payload.get("sensor", {})
@@ -111,6 +154,12 @@ def process_telemetry_data(payload, channel_layer):
             timestamp = timezone.localtime(timestamp)
         else:
             timestamp = timezone.now()
+
+    # Konversi ke lokal naive jika USE_TZ = False untuk kecocokan database
+    if timestamp and timezone.is_aware(timestamp):
+        timestamp = timezone.localtime(timestamp)
+        if not settings.USE_TZ:
+            timestamp = timezone.make_naive(timestamp)
 
     temperature = sensor_data.get("temperature")
     vibration = sensor_data.get("vibration")

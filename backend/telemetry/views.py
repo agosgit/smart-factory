@@ -169,6 +169,7 @@ def sensor_thresholds_api(request):
         return Response(serializer.data)
 
     elif request.method == 'POST':
+        from telemetry.mqtt import publish_thresholds
         data = request.data
         if isinstance(data, list):
             updated_items = []
@@ -184,6 +185,7 @@ def sensor_thresholds_api(request):
                     except SensorThreshold.DoesNotExist:
                         pass
             serializer = SensorThresholdSerializer(updated_items, many=True)
+            publish_thresholds()  # Push threshold terbaru ke firmware via MQTT
             return Response({
                 "success": True, 
                 "data": serializer.data, 
@@ -199,6 +201,7 @@ def sensor_thresholds_api(request):
                 threshold.value = float(value)
                 threshold.save()
                 serializer = SensorThresholdSerializer(threshold)
+                publish_thresholds()  # Push threshold terbaru ke firmware via MQTT
                 return Response({
                     "success": True, 
                     "data": serializer.data, 

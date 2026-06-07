@@ -1,3 +1,4 @@
+//gateway
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <PubSubClient.h>
@@ -7,15 +8,19 @@
 const char* WIFI_SSID = "XinnThink";
 const char* WIFI_PASSWORD = "23456789";
 
-const char* LOCAL_MQTT_HOST = "172.29.242.150";
+const char* LOCAL_MQTT_HOST = "10.138.156.150";
 const uint16_t LOCAL_MQTT_PORT = 1883;
-const char* REMOTE_MQTT_HOST = "172.29.242.150";
+const char* REMOTE_MQTT_HOST = "broker.hivemq.com";
 const uint16_t REMOTE_MQTT_PORT = 1883;
-const char* MQTT_USER = "admin";
-const char* MQTT_PASSWORD = "admin";
+const char* LOCAL_MQTT_USER = "admin";
+const char* LOCAL_MQTT_PASSWORD = "admin";
+const char* REMOTE_MQTT_USER = "";       // HiveMQ public = tanpa auth
+const char* REMOTE_MQTT_PASSWORD = "";
 
-const char* LOCAL_TOPIC_FILTER = "gateway/+/telemetry";
-const char* REMOTE_STATUS_TOPIC = "factory/gateway/status";
+const char* LOCAL_TOPIC_FILTER      = "gateway/+/telemetry";
+const char* REMOTE_STATUS_TOPIC     = "factory/gateway/status";
+const char* REMOTE_CONFIG_TOPIC_SUB = "factory/config/threshold";  // Subscribe dari server
+const char* LOCAL_CONFIG_TOPIC_PUB  = "gateway/config/threshold";  // Forward ke node lokal
 const char* OFFLINE_FILE = "/offline_buffer.txt";
 
 WiFiClient localWifiClient;
@@ -26,6 +31,11 @@ unsigned long lastStatusSend = 0;
 const uint32_t STATUS_INTERVAL_MS = 15000;
 const int LED_PIN = 2;
 const int ALARM_PIN = 5;
+
+// Non-blocking reconnect tracking
+unsigned long lastLocalConnectAttempt = 0;
+unsigned long lastRemoteConnectAttempt = 0;
+const unsigned long RECONNECT_INTERVAL_MS = 10000; // Coba reconnect tiap 10 detik
 
 void blinkLED() {
   digitalWrite(LED_PIN, HIGH);
@@ -51,9 +61,12 @@ void saveOfflineMessage(const String &topic, const String &payload) {
     return;
   }
 
-  file.println(serializeBufferedEntry(topic, payload));
+  String line = serializeBufferedEntry(topic, payload);
+  file.println(line);
   file.close();
   Serial.println("Buffered message locally.");
+  Serial.print("Buffered entry: ");
+  Serial.println(line);
 }
 
 void flushOfflineBuffer() {
@@ -65,7 +78,24 @@ void flushOfflineBuffer() {
     return;
   }
 
-  Serial.println("Flushing offline messages...");
+  // Hitung entri buffered untuk laporan
+  int count = 0;
+  while (file.available()) {
+    String tmp = file.readStringUntil('\n');
+    if (tmp.length() > 0) count++;
+  }
+  file.close();
+
+  Serial.print("Flushing offline messages... entries=");
+  Serial.println(count);
+
+  // Baca lagi dan kirim satu-per-satu. Jika gagal, biarkan file utuh.
+  file = SPIFFS.open(OFFLINE_FILE, FILE_READ);
+  if (!file) {
+    Serial.println("Unable to re-open offline buffer for sending.");
+    return;
+  }
+
   while (file.available()) {
     String line = file.readStringUntil('\n');
     if (line.length() == 0) continue;
@@ -79,6 +109,11 @@ void flushOfflineBuffer() {
 
     const char* topic = doc["topic"];
     const char* payload = doc["payload"];
+    Serial.print("Re-publishing buffered -> ");
+    Serial.print(topic);
+    Serial.print(" : ");
+    Serial.println(payload);
+
     if (!remoteMqtt.publish(topic, payload)) {
       Serial.println("Re-publish failed, keep remaining buffer.");
       file.close();
@@ -125,6 +160,29 @@ String getRemoteTopicForNode(const char *nodeId) {
     return String("factory/node2/telemetry");
   }
   return String();
+}
+
+// Callback: pesan dari remote broker (HiveMQ) — khusus config/threshold
+void onRemoteMessage(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, REMOTE_CONFIG_TOPIC_SUB) != 0) return;
+
+  String message;
+  for (unsigned int i = 0; i < length; i++) message += (char)payload[i];
+
+  Serial.print("[CONFIG] Threshold baru dari server, forward ke lokal: ");
+  Serial.println(message);
+
+  // Forward ke local broker agar node1 & node2 menerima threshold baru
+  if (localMqtt.connected()) {
+    if (localMqtt.publish(LOCAL_CONFIG_TOPIC_PUB, message.c_str(), true)) {
+      Serial.println("[CONFIG] Berhasil forward ke " + String(LOCAL_CONFIG_TOPIC_PUB));
+      blinkLED();
+    } else {
+      Serial.println("[CONFIG] Gagal forward threshold ke local broker.");
+    }
+  } else {
+    Serial.println("[CONFIG] Local MQTT tidak terhubung, threshold tidak dapat diteruskan.");
+  }
 }
 
 void onLocalMessage(char* topic, byte* payload, unsigned int length) {
@@ -204,6 +262,12 @@ void connectLocalMqtt() {
     return;
   }
 
+  // Batasi percobaan agar tidak spamming/blocking
+  if (millis() - lastLocalConnectAttempt < RECONNECT_INTERVAL_MS && lastLocalConnectAttempt != 0) {
+    return;
+  }
+  lastLocalConnectAttempt = millis();
+
   localMqtt.setServer(LOCAL_MQTT_HOST, LOCAL_MQTT_PORT);
   localMqtt.setCallback(onLocalMessage);
 
@@ -213,19 +277,17 @@ void connectLocalMqtt() {
   Serial.println(LOCAL_MQTT_PORT);
 
   String clientId = String("gateway-local-") + WiFi.macAddress();
-  while (!localMqtt.connected()) {
-    if (localMqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD)) {
-      Serial.println("Local MQTT connected.");
-      if (localMqtt.subscribe(LOCAL_TOPIC_FILTER)) {
-        Serial.print("Subscribed to local topic: ");
-        Serial.println(LOCAL_TOPIC_FILTER);
-      } else {
-        Serial.println("Failed to subscribe to local topic.");
-      }
-      break;
+  if (localMqtt.connect(clientId.c_str(), LOCAL_MQTT_USER, LOCAL_MQTT_PASSWORD)) {
+    Serial.println("Local MQTT connected.");
+    if (localMqtt.subscribe(LOCAL_TOPIC_FILTER)) {
+      Serial.print("Subscribed to local topic: ");
+      Serial.println(LOCAL_TOPIC_FILTER);
+    } else {
+      Serial.println("Failed to subscribe to local topic.");
     }
-    Serial.print('.');
-    delay(2000);
+  } else {
+    Serial.print("Local MQTT connection failed, state: ");
+    Serial.println(localMqtt.state());
   }
 }
 
@@ -234,7 +296,14 @@ void connectRemoteMqtt() {
     return;
   }
 
+  // Batasi percobaan agar tidak spamming/blocking
+  if (millis() - lastRemoteConnectAttempt < RECONNECT_INTERVAL_MS && lastRemoteConnectAttempt != 0) {
+    return;
+  }
+  lastRemoteConnectAttempt = millis();
+
   remoteMqtt.setServer(REMOTE_MQTT_HOST, REMOTE_MQTT_PORT);
+  remoteMqtt.setCallback(onRemoteMessage);
 
   Serial.print("Connecting to remote MQTT broker at ");
   Serial.print(REMOTE_MQTT_HOST);
@@ -242,13 +311,14 @@ void connectRemoteMqtt() {
   Serial.println(REMOTE_MQTT_PORT);
 
   String clientId = String("gateway-remote-") + WiFi.macAddress();
-  while (!remoteMqtt.connected()) {
-    if (remoteMqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD)) {
-      Serial.println("Remote MQTT connected.");
-      break;
-    }
-    Serial.print('.');
-    delay(2000);
+  if (remoteMqtt.connect(clientId.c_str(), REMOTE_MQTT_USER, REMOTE_MQTT_PASSWORD)) {
+    Serial.println("Remote MQTT connected.");
+    remoteMqtt.subscribe(REMOTE_CONFIG_TOPIC_SUB);
+    Serial.print("Subscribed to remote config: ");
+    Serial.println(REMOTE_CONFIG_TOPIC_SUB);
+  } else {
+    Serial.print("Remote MQTT connection failed, state: ");
+    Serial.println(remoteMqtt.state());
   }
 }
 
